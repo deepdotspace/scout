@@ -1,0 +1,539 @@
+@import "tailwindcss" source(none);
+
+/* Scan local source + SDK components for Tailwind class usage */
+@source "./**/*.{ts,tsx}";
+@source "../node_modules/deepspace/dist/**/*.js";
+
+/*
+ * Scout v2: the press-wire world. A warm paper editorial look with two modes
+ * (day default, night) and a four-way user-customizable accent (ember default,
+ * iris, moss, ink). The full spec is docs/design/DESIGN_V2.md.
+ *
+ * Tokens live as plain CSS custom properties on :root so a screen wave can read
+ * any of them with `var(--ink)` / `var(--accent-soft)` etc. The mode is set on
+ * <html data-mode="day|night"> and the accent on <html data-accent="...">; both
+ * are driven by the AccentModeProvider (src/theme/accent.tsx). The accent hex is
+ * also written inline as `--accent` so every derived surface recolors instantly.
+ *
+ * The Tailwind @theme block below keeps the v1 token NAMES alive (mapped to the
+ * new palette) so existing screen pages that still use bg-background / text-
+ * foreground / bg-flare compile and read correctly until their own wave rebuilds
+ * them. New code should prefer the explicit Scout vars.
+ */
+
+/* ---- Day palette (the default world) ---- */
+:root,
+:root[data-mode="day"] {
+  --bg: #FAF6EF;
+  --bg-trans: rgba(250, 246, 239, 0.78);
+  --surface: #FFFFFF;
+  --s2: #F2ECE1;
+  --ink: #272118;
+  --ink2: #6E6557;
+  --ink3: #9D9486;
+  --line: #EAE3D6;
+  --hover: rgba(120, 100, 60, 0.06);
+  --aink: #FFFFFF;
+
+  /* The field (the dark generation panel, intentionally dark in day too) */
+  --field-bg: #0F1115;
+  --field-ink: #EEF0F4;
+  --field-dim: #7C8290;
+  --field-track: rgba(255, 255, 255, 0.11);
+
+  /* Toast */
+  --toast-bg: #1B1D22;
+  --toast-ink: #EEF0F4;
+
+  /* Live status dot (newsletter is filing) */
+  --live: #5BA86B;
+
+  /* The featured dispatch card: the one real elevation on the desk. Rest is the
+   * soft two-layer card shadow; hover lifts deeper (DESIGN_V2.md section 2). */
+  --shadow-featured: 0 1px 2px rgba(40, 30, 15, 0.05), 0 14px 40px -20px rgba(40, 30, 15, 0.22);
+  --shadow-featured-hover: 0 1px 2px rgba(40, 30, 15, 0.05), 0 26px 55px -24px rgba(40, 30, 15, 0.3);
+
+  color-scheme: light;
+}
+
+/* ---- Night palette (the low-light night desk) ---- */
+:root[data-mode="night"] {
+  --bg: #121419;
+  --bg-trans: rgba(18, 20, 25, 0.82);
+  --surface: #1B1E25;
+  --s2: #0E1014;
+  --ink: #ECEEF3;
+  --ink2: #9CA3B0;
+  --ink3: #646B79;
+  --line: #2A2E37;
+  --hover: rgba(255, 255, 255, 0.05);
+  --aink: #FFFFFF;
+
+  --field-bg: #0B0D11;
+  --field-ink: #EEF0F4;
+  --field-dim: #767D8C;
+  --field-track: rgba(255, 255, 255, 0.1);
+
+  --toast-bg: #22262F;
+  --toast-ink: #ECEEF3;
+
+  --live: #5BA86B;
+
+  /* Night drops the heavy shadow and leans on the hairline border. */
+  --shadow-featured: none;
+  --shadow-featured-hover: none;
+
+  color-scheme: dark;
+}
+
+/* ---- The accent system ----
+ * Each accent declares its day + night hex. The active hex flows into --accent;
+ * every accent surface derives from it with color-mix in oklab against the
+ * current --surface, so changing the accent (or the mode) recolors the whole app.
+ * Default = ember. */
+:root,
+:root[data-accent="ember"] { --accent-day: #C2603D; --accent-night: #E2814F; }
+:root[data-accent="iris"]  { --accent-day: #7C5BD0; --accent-night: #A788EE; }
+:root[data-accent="moss"]  { --accent-day: #4E8A57; --accent-night: #76B383; }
+:root[data-accent="ink"]   { --accent-day: #3E63C8; --accent-night: #7C97EE; }
+
+:root,
+:root[data-mode="day"]   { --accent: var(--accent-day); }
+:root[data-mode="night"] { --accent: var(--accent-night); }
+
+:root {
+  --accent-soft: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  --accent-line: color-mix(in oklab, var(--accent) 38%, var(--surface));
+  --accent-sh: color-mix(in oklab, var(--accent) 38%, transparent);
+  --field-glow: color-mix(in oklab, var(--accent) 26%, transparent);
+}
+
+/*
+ * Tailwind @theme: v1 token names mapped to the v2 paper palette. Existing screen
+ * pages compile and read sensibly against this until their wave rebuilds them.
+ * Tailwind v4 bakes literal values at build time, so these are static; the live
+ * day/night swap happens through the CSS vars above, which these reference. The
+ * @theme values below are the DAY defaults (Tailwind cannot re-evaluate per mode);
+ * pages that must follow the mode should read the explicit Scout vars directly.
+ */
+@theme {
+  --color-background: #FAF6EF;
+  --color-foreground: #272118;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #272118;
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #272118;
+
+  --color-primary: #C2603D;
+  --color-primary-foreground: #FFFFFF;
+
+  --color-secondary: #F2ECE1;
+  --color-secondary-foreground: #272118;
+  --color-muted: #F2ECE1;
+  --color-muted-foreground: #6E6557;
+  --color-accent: #F2ECE1;
+  --color-accent-foreground: #272118;
+
+  --color-destructive: #C2503D;
+  --color-destructive-foreground: #FFFFFF;
+
+  --color-border: #EAE3D6;
+  --color-input: #EAE3D6;
+  --color-ring: #C2603D;
+  --radius: 0.75rem;
+
+  /* Accent detail tokens (v1 "flare" names mapped to the live accent vars) */
+  --color-flare: #C2603D;
+  --color-flare-hover: #B0532F;
+  --color-flare-tint: rgba(194, 96, 61, 0.12);
+  --color-text-secondary: #6E6557;
+  --color-text-muted: #9D9486;
+  --color-surface-raised: #FFFFFF;
+  --color-border-strong: #D8CEBC;
+
+  /* Status colors. used for state only, never decoration */
+  --color-success: #5BA86B;
+  --color-success-foreground: #FFFFFF;
+  --color-warning: #C2873D;
+  --color-warning-foreground: #FFFFFF;
+  --color-info: #3E63C8;
+  --color-info-foreground: #FFFFFF;
+
+  /* Soft warm two-layer shadows (day). Hairlines still do most of the work. */
+  --shadow-card: 0 1px 2px rgba(40, 30, 15, 0.05);
+  --shadow-card-hover: 0 1px 2px rgba(40, 30, 15, 0.05), 0 14px 40px -20px rgba(40, 30, 15, 0.22);
+
+  /* Backward-compatibility aliases (mapped to the v2 palette) */
+  --color-surface: #FAF6EF;
+  --color-surface-elevated: #FFFFFF;
+  --color-surface-overlay: #FFFFFF;
+  --color-surface-input: #EAE3D6;
+  --color-content: #272118;
+  --color-content-secondary: #6E6557;
+  --color-content-muted: #9D9486;
+  --color-content-inverse: #FFFFFF;
+  --color-border-focus: #C2603D;
+  --color-primary-hover: #B0532F;
+  --color-primary-muted: rgba(194, 96, 61, 0.12);
+  --color-primary-border: rgba(194, 96, 61, 0.3);
+  --color-danger: #C2503D;
+  --color-danger-muted: rgba(194, 80, 61, 0.12);
+  --color-danger-border: rgba(194, 80, 61, 0.34);
+  --color-success-muted: rgba(91, 168, 107, 0.14);
+  --color-success-border: rgba(91, 168, 107, 0.38);
+  --color-warning-muted: rgba(194, 135, 61, 0.14);
+  --color-warning-border: rgba(194, 135, 61, 0.38);
+  --color-info-muted: rgba(62, 99, 200, 0.12);
+  --color-info-border: rgba(62, 99, 200, 0.34);
+
+  /* Type families exposed as Tailwind font tokens */
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Spline Sans Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+/*
+ * Live-token bridge. Tailwind bakes the @theme values above into the compiled
+ * utility classes as `var(--color-*)` references, then emits those vars on :root
+ * with the day defaults. We re-point the *color* vars at the live Scout tokens so
+ * that transitional screen pages still using v1 utilities (bg-card, text-
+ * foreground, border-border, bg-flare...) follow day/night + the chosen accent
+ * automatically, until each page's own wave rebuilds it on the explicit vars.
+ * This block must come AFTER @theme to win the cascade.
+ */
+:root {
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--ink);
+
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--aink);
+
+  --color-secondary: var(--s2);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--s2);
+  --color-muted-foreground: var(--ink2);
+  --color-accent: var(--s2);
+  --color-accent-foreground: var(--ink);
+
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--accent);
+
+  --color-flare: var(--accent);
+  --color-flare-hover: var(--accent);
+  --color-flare-tint: var(--accent-soft);
+  --color-text-secondary: var(--ink2);
+  --color-text-muted: var(--ink3);
+  --color-surface-raised: var(--surface);
+  --color-border-strong: var(--ink3);
+
+  --color-surface: var(--bg);
+  --color-surface-elevated: var(--surface);
+  --color-surface-overlay: var(--surface);
+  --color-surface-input: var(--line);
+  --color-content: var(--ink);
+  --color-content-secondary: var(--ink2);
+  --color-content-muted: var(--ink3);
+  --color-content-inverse: var(--aink);
+  --color-border-focus: var(--accent);
+  --color-primary-hover: var(--accent);
+  --color-primary-muted: var(--accent-soft);
+  --color-primary-border: var(--accent-line);
+}
+
+/* ---- Named keyframes (the sct- wire-machine motion set, used app-wide) ---- */
+
+/* The expanding ring on a live newsletter's status dot (home desk). */
+@keyframes sct-ping {
+  0%   { transform: scale(1);   opacity: 0.55; }
+  80%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* A blink for the "in the field" live dot + the companion typing indicator. */
+@keyframes sct-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+/* A light streak travels down the issue "wire" spine. */
+@keyframes sct-wire {
+  0%   { top: -72px; opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* A shimmer pass for loading skeletons. */
+@keyframes sct-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(220%); }
+}
+
+/* Entrance: rise + fade for content blocks. */
+@keyframes sct-up {
+  0%   { transform: translateY(10px); opacity: 0; }
+  100% { transform: translateY(0);    opacity: 1; }
+}
+
+/* Entrance: fade in. */
+@keyframes sct-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* The brand glyph spinning slowly at the center of the radar (generation). */
+@keyframes sct-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+/* Alias kept for callers that reference the orbit name. */
+@keyframes sct-orbit {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* A soft pulse (alternate live-dot treatment). */
+@keyframes sct-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+
+/* The landing's voice-showcase progress bar, refilling once per auto-cycle. */
+@keyframes sct-progress {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(0); }
+}
+
+/*
+ * Animation keyframes for shadcn components (replaces tailwindcss-animate, which
+ * is not compatible with Tailwind v4).
+ */
+@keyframes animate-in {
+  from { opacity: var(--tw-enter-opacity, 1); transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0) scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1)) rotate(var(--tw-enter-rotate, 0)); }
+}
+
+@keyframes animate-out {
+  to { opacity: var(--tw-exit-opacity, 1); transform: translate3d(var(--tw-exit-translate-x, 0), var(--tw-exit-translate-y, 0), 0) scale3d(var(--tw-exit-scale, 1), var(--tw-exit-scale, 1), var(--tw-exit-scale, 1)) rotate(var(--tw-exit-rotate, 0)); }
+}
+
+@utility animate-in {
+  animation-name: animate-in;
+  animation-duration: 150ms;
+  --tw-enter-opacity: initial;
+  --tw-enter-scale: initial;
+  --tw-enter-translate-x: initial;
+  --tw-enter-translate-y: initial;
+  --tw-enter-rotate: initial;
+}
+
+@utility animate-out {
+  animation-name: animate-out;
+  animation-duration: 150ms;
+  --tw-exit-opacity: initial;
+  --tw-exit-scale: initial;
+  --tw-exit-translate-x: initial;
+  --tw-exit-translate-y: initial;
+  --tw-exit-rotate: initial;
+}
+
+@utility fade-in-0 { --tw-enter-opacity: 0; }
+@utility fade-out-0 { --tw-exit-opacity: 0; }
+@utility zoom-in-95 { --tw-enter-scale: .95; }
+@utility zoom-out-95 { --tw-exit-scale: .95; }
+@utility slide-in-from-top-2 { --tw-enter-translate-y: -0.5rem; }
+@utility slide-in-from-bottom-2 { --tw-enter-translate-y: 0.5rem; }
+@utility slide-in-from-left-2 { --tw-enter-translate-x: -0.5rem; }
+@utility slide-in-from-right-2 { --tw-enter-translate-x: 0.5rem; }
+@utility slide-out-to-top-2 { --tw-exit-translate-y: -0.5rem; }
+@utility slide-out-to-bottom-2 { --tw-exit-translate-y: 0.5rem; }
+@utility slide-out-to-left-2 { --tw-exit-translate-x: -0.5rem; }
+@utility slide-out-to-right-2 { --tw-exit-translate-x: 0.5rem; }
+
+/*
+ * Custom base styles: must be in @layer base so utility classes can override.
+ */
+@layer base {
+  html, body, #root {
+    min-height: 100vh;
+    background-color: var(--bg);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    color: var(--ink);
+    /* Tabular numerals everywhere counts / timestamps / schedules live */
+    font-feature-settings: 'tnum' 1;
+  }
+
+  /* The three type families, each with one job (DESIGN_V2.md section 3). */
+  .font-serif    { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; }
+  .font-sans     { font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  .font-mono     { font-family: 'Spline Sans Mono', ui-monospace, 'SF Mono', monospace; }
+  /* v1 aliases kept so existing pages keep their intended family. */
+  .font-display  { font-family: 'Newsreader', Georgia, serif; }
+  .font-reading  { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; }
+  .font-metronome { font-family: 'Spline Sans Mono', ui-monospace, monospace; }
+  .tnum { font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
+
+  /* Scrollbar (set globally, DESIGN_V2.md section 2). */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 20px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    background-color: rgba(120, 110, 90, 0.28);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(120, 110, 90, 0.45);
+  }
+
+  /* Selection: a warm accent-leaning tint, not a solid block. */
+  ::selection {
+    background-color: rgba(120, 90, 40, 0.16);
+    color: var(--ink);
+  }
+
+  /*
+   * Focus indication is intentionally NOT applied app-wide via a
+   * *:focus-visible rule. A global outline paints onto every focusable
+   * element, including programmatically-focusable Radix wrappers and
+   * tabindex={-1} scroll containers, which reads as "the whole panel is
+   * selected" the moment a child is clicked. Per-component focus rings on
+   * Button / Input / Textarea are sufficient for keyboard accessibility.
+   */
+
+  /* Prevent 300ms tap delay on mobile */
+  a, button, [role="button"], input, select, textarea {
+    touch-action: manipulation;
+  }
+
+  /* Tailwind v4 dropped v3's default pointer cursor on buttons. Restore the hand
+   * for everything interactive (kept in @layer base so a per-element cursor-*
+   * utility still wins), and not-allowed for anything disabled. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  label[for],
+  select,
+  summary {
+    cursor: pointer;
+  }
+  :disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  /* Pill hover: tint border + text to the accent (cannot express via inline
+   * style because it is a pseudo-class). Selected pills keep their accent wash. */
+  .sct-pill:not([data-selected]):hover {
+    border-color: var(--accent) !important;
+    color: var(--accent) !important;
+  }
+  .sct-pill:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  /* Source chip hover: tint to the accent over the soft wash. */
+  .sct-source:hover {
+    color: var(--accent) !important;
+    background: var(--accent-soft) !important;
+  }
+
+  /* Button variants. Accent-derived fills + hover/active states live here because
+   * they need pseudo-classes the accent var keeps live. */
+  .sct-btn-primary {
+    background: var(--accent);
+    color: var(--aink);
+    box-shadow: 0 2px 8px var(--accent-sh);
+  }
+  .sct-btn-primary:not(:disabled):hover { filter: brightness(1.06); }
+  .sct-btn-primary:not(:disabled):active { transform: translateY(1px); }
+
+  .sct-btn-ghost {
+    background: var(--surface);
+    color: var(--ink2);
+    border: 1px solid var(--line);
+  }
+  .sct-btn-ghost:not(:disabled):hover { background: var(--hover); color: var(--ink); }
+
+  .sct-btn-accent {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--accent-line);
+  }
+  .sct-btn-accent:not(:disabled):hover { background: var(--accent); color: var(--aink); }
+
+  /* The accent action pill. On its own hover it inverts to a solid accent fill,
+   * matching .sct-btn-accent. The featured card's "Read the issue" pill also
+   * inverts when the whole card (.sct-featured) is hovered. */
+  .sct-action { transition: background 0.15s, color 0.15s; }
+  .sct-action:not(:disabled):hover,
+  .sct-featured:hover .sct-action {
+    background: var(--accent);
+    color: var(--aink);
+  }
+
+  .sct-btn-danger {
+    background: transparent;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger-border);
+  }
+  .sct-btn-danger:not(:disabled):hover { background: var(--color-danger-muted); }
+
+  /* Light inputs: accent ring on focus, muted placeholder. */
+  .sct-input::placeholder { color: var(--ink3); }
+  .sct-input:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+
+  /* Desk row: a soft wash on hover/focus (the spine + type carry the hierarchy,
+   * never a box). The icon button warms its hover the same quiet way. */
+  .sct-desk-row:hover,
+  .sct-desk-row:focus-visible { background: var(--hover); }
+  .sct-icon-btn { transition: background 0.15s, color 0.15s, border-color 0.15s; }
+  .sct-icon-btn:hover { background: var(--hover); color: var(--ink); border-color: var(--ink3); }
+
+  /* Overflow-menu rows: a soft wash on hover (danger rows wash danger). */
+  .sct-menu-item:hover { background: var(--hover); }
+
+  /* Sidebar / tab rows: active = soft accent wash + accent text. */
+  .sct-rail { color: var(--ink2); }
+  .sct-rail:hover { background: var(--hover); color: var(--ink); }
+  .sct-rail-active { background: var(--accent-soft); color: var(--accent); }
+  .sct-rail-active:hover { background: var(--accent-soft); color: var(--accent); }
+  .sct-tab { color: var(--ink3); }
+  .sct-tab:hover { color: var(--ink); }
+  .sct-tab-active { color: var(--accent); }
+
+  /* Sidebar beat row hover (inactive rows only). */
+  .sct-beat:not([data-active]):hover { background: var(--hover); }
+
+  /* Sidebar resize handle: a faint line that warms to the accent on hover/drag. */
+  .sct-handle { background: transparent; transition: background 0.12s; }
+  [aria-label="Resize sidebar"]:hover .sct-handle,
+  [aria-label="Resize sidebar"]:active .sct-handle { background: var(--accent-line); }
+
+  /* Reduced motion: collapse all motion to instant. Components also branch on
+   * the hook; this is the belt-and-suspenders sweep. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

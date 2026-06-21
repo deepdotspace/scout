@@ -1,0 +1,20 @@
+node_modules
+dist
+.wrangler
+.dev.vars
+.deepspace
+.worker-bundle.js
+*.tgz
+docs
+
+# Agent tooling + build-process docs + harness/artifacts — not the shipped app
+.agents/
+.claude/
+.impeccable.md
+skills-lock.json
+CLAUDE.md
+AGENTS.md
+scripts/
+promo-shots/
+test-results/
+playwright-report/
