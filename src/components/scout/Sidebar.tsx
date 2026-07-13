@@ -18,8 +18,8 @@
 
 import { useMemo } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useQuery } from 'deepspace'
-import { Plus, Layers, Star, Archive, Search, Settings, Sun, Moon } from 'lucide-react'
+import { useQuery, signOut } from 'deepspace'
+import { Plus, Layers, Star, Archive, Search, Settings, Sun, Moon, LogOut } from 'lucide-react'
 import { ScoutMark } from './Logo'
 import { EyebrowLabel } from './Eyebrow'
 import { StatusDot } from './StatusDot'
@@ -207,6 +207,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
         >
           <Settings className="size-[18px]" />
           <span>Settings</span>
+        </button>
+
+        <button
+          onClick={() => signOut()}
+          className="sct-rail mt-1 flex min-h-[36px] w-full items-center gap-3 rounded-[9px] px-3 text-sm font-medium"
+          style={{ color: 'var(--ink2)' }}
+        >
+          <LogOut className="size-[18px]" />
+          <span>Log out</span>
         </button>
       </div>
     </div>

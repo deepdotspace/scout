@@ -77,7 +77,7 @@ function RootRoutes() {
   }
 
   return (
-    <AuthGate>
+    <AuthGate redirectOnSignOut={PUBLIC_PATH}>
       <AppShell>
         <Suspense fallback={<BootScreen />}>
           <Outlet />
