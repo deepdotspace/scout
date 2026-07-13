@@ -75,14 +75,14 @@ export async function scanDue(env: Env, now: number): Promise<void> {
     const issues = (await ctx.records.query('issues', {})) as Envelope[]
     const number = issues.filter((i) => i.data.newsletterId === n.recordId).length + 1
 
-    const created = await ctx.records.create('issues', {
+    const created = (await ctx.records.create('issues', {
       newsletterId: n.recordId,
       number,
       status: 'draft',
       emailStatus: 'pending',
       version: 1,
       ownerUserId: env.OWNER_USER_ID,
-    })
+    })) as Envelope
 
     await ctx.records.update('newsletters', n.recordId, {
       lastRunStatus: 'running',
