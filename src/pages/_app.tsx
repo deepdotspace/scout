@@ -26,7 +26,7 @@ import { ToastProvider } from '../components/ui'
 import { AppShell } from '../components/scout/AppShell'
 import { ScoutMark, ScoutToastProvider } from '../components/scout'
 import { AccentModeProvider } from '../theme/accent'
-import { APP_NAME, SCOPE_ID } from '../constants'
+import { SCOPE_ID } from '../constants'
 import { schemas } from '../schemas'
 
 /** The one public, shell-less, ungated route. Everything else stays owner-gated. */
@@ -109,7 +109,7 @@ function AuthBoot({ children }: { children: ReactNode }) {
 
   return (
     <RecordProvider allowAnonymous>
-      <RecordScope roomId={SCOPE_ID} schemas={schemas} appId={APP_NAME}>
+      <RecordScope roomId={SCOPE_ID} schemas={schemas}>
         {children}
       </RecordScope>
     </RecordProvider>
