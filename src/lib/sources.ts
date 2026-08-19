@@ -13,6 +13,8 @@
  * honest run error instead of writing an empty issue with no explanation.
  */
 
+import { normalizeDomains } from './domains'
+
 export interface SourceItem {
   url: string
   title: string
@@ -98,8 +100,13 @@ export async function searchExa(call: IntegrationCall, opts: ExaOpts): Promise<S
   if (opts.recencyDays > 0) {
     body.startPublishedDate = new Date(Date.now() - opts.recencyDays * 86400000).toISOString()
   }
-  if (opts.includeDomains?.length) body.includeDomains = opts.includeDomains
-  if (opts.blockedDomains?.length) body.excludeDomains = opts.blockedDomains
+  // Normalize at the provider boundary: Exa 400s (INVALID_DOMAIN) on any entry
+  // without a real TLD, and that would fail every query in the run. Drop bad
+  // entries here so one typo (a bare "x") can never break generation.
+  const include = normalizeDomains(opts.includeDomains)
+  const exclude = normalizeDomains(opts.blockedDomains)
+  if (include.length) body.includeDomains = include
+  if (exclude.length) body.excludeDomains = exclude
 
   let res: unknown
   try {
@@ -111,7 +118,7 @@ export async function searchExa(call: IntegrationCall, opts: ExaOpts): Promise<S
   const raw = extractExa(res)
   if (!raw) return { results: [], error: providerError(res) }
 
-  const blocked = new Set((opts.blockedDomains ?? []).map((d) => d.toLowerCase()))
+  const blocked = new Set(exclude)
   const results: SourceItem[] = []
   for (const r of raw) {
     const url = asString(r.url)
