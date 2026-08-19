@@ -26,6 +26,7 @@ import {
   type SourceItem,
   type SourceResult,
 } from './sources'
+import { normalizeDomains } from './domains'
 
 type AiEnv = Parameters<typeof createDeepSpaceAI>[0]
 
@@ -78,19 +79,24 @@ export async function discoverForQuery(
   const errors: string[] = []
   const items: SourceItem[] = []
 
+  // Use the EFFECTIVE (valid) preferred domains: if the reader typed only junk
+  // (e.g. a bare "x"), it normalizes to none, so we neither pin Exa to a bad
+  // filter nor wrongly skip the forum fallback below.
+  const preferred = normalizeDomains(cfg.preferredDomains)
+
   const exa: SourceResult = await searchExa(call, {
     query,
     numResults: FUNNEL.exaResultsPerQuery,
     recencyDays,
     textMaxChars: 2000,
-    includeDomains: cfg.preferredDomains,
+    includeDomains: preferred,
     blockedDomains: cfg.blockedDomains,
   })
   items.push(...exa.results)
   if (exa.error) errors.push(`exa "${query}": ${exa.error}`)
 
-  // Forums add community voice; skip if the reader pinned preferred domains.
-  if (!cfg.preferredDomains?.length) {
+  // Forums add community voice; skip only if the reader pinned real domains.
+  if (!preferred.length) {
     for (const site of FORUM_SITES) {
       const fc = await searchFirecrawl(call, {
         query,

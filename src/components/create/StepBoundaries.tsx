@@ -85,14 +85,14 @@ export function StepBoundaries({
           label="Sources to favor"
           value={preferredDomains}
           onChange={onPreferredDomains}
-          placeholder="e.g. arXiv, primary blogs, the lab's own posts"
+          placeholder="Full domains, e.g. arxiv.org, x.com, openai.com"
           ariaLabel="Sources to favor"
         />
         <BoundedField
           label="Sources to block"
           value={blockedDomains}
           onChange={onBlockedDomains}
-          placeholder="e.g. aggregators, that one rumor site"
+          placeholder="Full domains, e.g. reddit.com, medium.com"
           ariaLabel="Sources to block"
         />
       </div>

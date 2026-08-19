@@ -28,6 +28,7 @@ import { DEFAULT_VOICE_PRESET } from '../../personas'
 import type { VoicePreset } from '../../personas'
 import { scoutsRead, generateIssue } from '../../lib/scout-api'
 import { computeNextSendAt } from '../../lib/schedule'
+import { normalizeDomains } from '../../lib/domains'
 import { isDemo } from '../../lib/demo'
 import type { ScoutsRead } from '../../lib/ai'
 import type { Frequency, Newsletter, RecencyWindow } from '../../lib/types'
@@ -71,10 +72,10 @@ function titleFromTopic(topic: string): string {
 }
 
 function parseDomains(s: string): string[] {
-  return s
-    .split(/[,\n]/)
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean)
+  // normalizeDomains strips scheme/path/www, lowercases, dedupes, and DROPS
+  // anything without a real TLD (a bare "x"), so we never persist a value Exa
+  // will 400 on.
+  return normalizeDomains(s.split(/[,\n]/))
 }
 
 export function CreateFlow({
