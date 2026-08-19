@@ -15,6 +15,14 @@
  * widens the search (more sources), which is the safe failure direction.
  */
 
+/**
+ * A hostname: dot-joined labels ending in a >= 2-letter TLD, no spaces/underscores.
+ * Each label must start AND end alphanumeric (RFC 1123), so "-reddit.com" and
+ * "reddit-.com" are rejected. Those are exactly the shapes Exa 400s on, and
+ * letting them through would re-open the bug this module exists to close.
+ */
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/
+
 /** Normalize one raw entry to a bare hostname, or null if it is not a real domain. */
 export function normalizeDomain(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
@@ -26,8 +34,7 @@ export function normalizeDomain(raw: unknown): string | null {
     .replace(/:\d+$/, '') // :port
     .replace(/^www\./, '') // leading www.
     .replace(/\.$/, '') // trailing root dot
-  // A hostname: dot-joined labels ending in a >= 2-letter TLD, no spaces/underscores.
-  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(d)) return null
+  if (!HOSTNAME.test(d)) return null
   return d
 }
 
@@ -44,4 +51,15 @@ export function normalizeDomains(list: readonly unknown[] | undefined | null): s
     }
   }
   return out
+}
+
+/**
+ * Parse a free-text field ("arxiv.org, openai.com") into clean domains.
+ *
+ * Splits on whitespace as well as commas/semicolons/pipes: space-separated is
+ * how people actually type two domains, and treated as one token it normalizes
+ * to nothing, silently clearing the field the reader just filled in.
+ */
+export function parseDomainList(input: string): string[] {
+  return normalizeDomains(input.split(/[\s,;|]+/))
 }

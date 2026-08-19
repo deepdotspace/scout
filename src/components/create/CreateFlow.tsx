@@ -28,7 +28,7 @@ import { DEFAULT_VOICE_PRESET } from '../../personas'
 import type { VoicePreset } from '../../personas'
 import { scoutsRead, generateIssue } from '../../lib/scout-api'
 import { computeNextSendAt } from '../../lib/schedule'
-import { normalizeDomains } from '../../lib/domains'
+import { parseDomainList } from '../../lib/domains'
 import { isDemo } from '../../lib/demo'
 import type { ScoutsRead } from '../../lib/ai'
 import type { Frequency, Newsletter, RecencyWindow } from '../../lib/types'
@@ -69,13 +69,6 @@ function titleFromTopic(topic: string): string {
   t = t.replace(/[.,;:\s]+$/, '')
   if (!t) return ''
   return t.charAt(0).toUpperCase() + t.slice(1)
-}
-
-function parseDomains(s: string): string[] {
-  // normalizeDomains strips scheme/path/www, lowercases, dedupes, and DROPS
-  // anything without a real TLD (a bare "x"), so we never persist a value Exa
-  // will 400 on.
-  return normalizeDomains(s.split(/[,\n]/))
 }
 
 export function CreateFlow({
@@ -241,8 +234,8 @@ export function CreateFlow({
       timezone,
       recencyWindow,
       location: location.trim(),
-      preferredDomains: parseDomains(preferredDomains),
-      blockedDomains: parseDomains(blockedDomains),
+      preferredDomains: parseDomainList(preferredDomains),
+      blockedDomains: parseDomainList(blockedDomains),
       nextSendAt,
     }
   }

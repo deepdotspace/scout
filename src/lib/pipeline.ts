@@ -97,7 +97,12 @@ export async function discoverForQuery(
 
   // Forums add community voice; skip only if the reader pinned real domains.
   if (!preferred.length) {
+    // Exa honours excludeDomains, but this fallback queries a fixed site list
+    // directly, so a blocked forum would come back through the side door. Drop
+    // any FORUM_SITE the reader blocked.
+    const blocked = normalizeDomains(cfg.blockedDomains)
     for (const site of FORUM_SITES) {
+      if (blocked.includes(site)) continue
       const fc = await searchFirecrawl(call, {
         query,
         site,
