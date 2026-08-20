@@ -9,6 +9,8 @@ import {
   schedulerCheck,
   storageCheck,
   countScheduled,
+  countOverdue,
+  OVERDUE_GRACE_MS,
 } from '../../src/lib/config-health'
 
 describe('ownerEmail', () => {
@@ -86,19 +88,59 @@ describe('modelCheck (no live ping; honest about wiring)', () => {
   })
 })
 
-describe('schedulerCheck (cron binding + queued beats)', () => {
+describe('schedulerCheck (missed slots, not just a binding)', () => {
   it('is down when the cron room is not bound', () => {
-    const r = schedulerCheck(false, 3)
+    const r = schedulerCheck(false, 3, 0)
     expect(r.status).toBe('down')
     expect(r.scheduled).toBe(0)
   })
-  it('is running with a real queued count when bound', () => {
-    expect(schedulerCheck(true, 2)).toMatchObject({ status: 'running', scheduled: 2 })
+  it('is running with a real queued count when bound and nothing was missed', () => {
+    expect(schedulerCheck(true, 2, 0)).toMatchObject({ status: 'running', scheduled: 2, overdue: 0 })
   })
   it('is idle (not green) when bound but nothing is scheduled', () => {
-    const r = schedulerCheck(true, 0)
+    const r = schedulerCheck(true, 0, 0)
     expect(r.status).toBe('idle')
     expect(r.reason).toMatch(/no beats/i)
+  })
+
+  // The regression this check exists for: the scheduler reported healthy for
+  // two months on binding-existence alone while no tick had ever fired.
+  it('is DOWN when a beat sat past a slot that never fired, even with the room bound', () => {
+    const r = schedulerCheck(true, 1, 3)
+    expect(r.status).toBe('down')
+    expect(r.overdue).toBe(3)
+    expect(r.reason).toMatch(/not running/i)
+  })
+  it('lets a missed slot outrank a healthy queued count', () => {
+    // Exactly the production shape: one future beat, three stalled ones.
+    expect(schedulerCheck(true, 1, 3).status).not.toBe('running')
+  })
+  it('reads naturally for a single overdue beat', () => {
+    expect(schedulerCheck(true, 0, 1).reason).toMatch(/1 active newsletter is/)
+  })
+})
+
+describe('countOverdue (proof a tick did not run)', () => {
+  const now = 1_800_000_000_000
+  const row = (status: string, nextSendAt: unknown) => ({ data: { status, nextSendAt } })
+
+  it('counts an active beat left well past its slot', () => {
+    expect(countOverdue([row('active', now - 60 * 86_400_000)], now)).toBe(1)
+  })
+  it('ignores a beat queued for the future', () => {
+    expect(countOverdue([row('active', now + 3_600_000)], now)).toBe(0)
+  })
+  it('does not cry wolf inside the grace window (a scan is allowed to be late)', () => {
+    expect(countOverdue([row('active', now - (OVERDUE_GRACE_MS - 60_000))], now)).toBe(0)
+  })
+  it('flags a beat once it is past the grace window', () => {
+    expect(countOverdue([row('active', now - (OVERDUE_GRACE_MS + 60_000))], now)).toBe(1)
+  })
+  it('ignores paused beats — a paused schedule is meant to sit still', () => {
+    expect(countOverdue([row('paused', now - 60 * 86_400_000)], now)).toBe(0)
+  })
+  it('ignores rows with no usable nextSendAt', () => {
+    expect(countOverdue([row('active', undefined), row('active', 'soon')], now)).toBe(0)
   })
 })
 

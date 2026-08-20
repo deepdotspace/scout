@@ -14,7 +14,7 @@
  *                  surfaced reason verbatim and never pretend a down probe is ok.
  */
 
-import { FUNNEL } from '../config'
+import { FUNNEL, SCAN_INTERVAL_MINUTES } from '../config'
 
 export type OwnerStatus = 'set' | 'missing'
 export type EmailStatus = 'delivering' | 'testmode' | 'misconfigured'
@@ -35,8 +35,12 @@ export interface ConfigHealth {
   integrations: CheckResult<IntegrationStatus>
   /** The owner-billed model proxy is wired (credential present). Not a live ping. */
   model: CheckResult<ModelStatus>
-  /** The cron DO is bound and how many active beats are queued for a future run. */
-  scheduler: CheckResult<SchedulerStatus> & { scheduled: number }
+  /**
+   * Whether the scanner is demonstrably keeping up: how many active beats are
+   * queued for a future run, and how many sat past a slot that never fired
+   * (any of those is proof a tick did not run).
+   */
+  scheduler: CheckResult<SchedulerStatus> & { scheduled: number; overdue: number }
   /** The records store answered this very request, so it is reachable. */
   storage: CheckResult<StorageStatus>
 }
@@ -166,24 +170,61 @@ export function modelCheck(ownerJwtPresent: boolean): CheckResult<ModelStatus> {
 }
 
 /**
- * Scheduler. The cron DO must be bound (it is part of the deploy manifest), and
- * the cadence only runs beats that carry a future nextSendAt. So the real signal
- * is: cron bound AND a count of active newsletters queued for a run. Bound with
- * at least one queued beat -> 'running'. Bound with none -> 'idle' (honest:
- * nothing to file, not a failure). Unbound -> 'down'.
+ * Scheduler.
+ *
+ * The binding being present proves nothing: a bound CRON_ROOMS whose alarm was
+ * never armed reports exactly the same as a healthy one, which is how a dead
+ * scanner sat green here for two months. So this check reads an OUTCOME rather
+ * than a wiring fact.
+ *
+ * The scanner's whole job is to advance `nextSendAt` past every slot it fires.
+ * An ACTIVE newsletter still sitting more than a scan interval behind its slot
+ * is therefore direct proof that no tick has run since that slot came due — no
+ * healthy scanner can leave one behind. That is the `overdue` signal, and it
+ * outranks everything: overdue beats mean 'down' no matter what else is wired.
+ *
+ *   unbound            -> 'down'  (nothing to run the tasks)
+ *   overdue > 0        -> 'down'  (proven stalled: a slot came and went)
+ *   scheduled > 0      -> 'running' (beats queued, none missed)
+ *   otherwise          -> 'idle'  (nothing to file; honest, not a failure)
+ *
+ * Note what 'running' does and does not claim: no beat has been missed. It is
+ * not a claim that a tick fired just now — the CronRoom's own last_run_at lives
+ * in DO-private SQLite with no server-side read path (the SDK marks those
+ * members private and the only reader is the owner-gated /ws/cron monitor). The
+ * missed-slot test is the strongest signal reachable from here, and unlike the
+ * old binding check it does flip to 'down' on its own the moment ticks stop.
  */
 export function schedulerCheck(
   cronBound: boolean,
   scheduled: number,
-): CheckResult<SchedulerStatus> & { scheduled: number } {
+  overdue: number,
+): CheckResult<SchedulerStatus> & { scheduled: number; overdue: number } {
   if (!cronBound) {
-    return { status: 'down', reason: 'The cron room is not bound. Redeploy to restore the scheduler.', scheduled: 0 }
+    return {
+      status: 'down',
+      reason: 'The cron room is not bound. Redeploy to restore the scheduler.',
+      scheduled: 0,
+      overdue: 0,
+    }
   }
-  if (scheduled > 0) return { status: 'running', reason: '', scheduled }
+  if (overdue > 0) {
+    const beats = overdue === 1 ? 'newsletter is' : 'newsletters are'
+    return {
+      status: 'down',
+      reason:
+        `${overdue} active ${beats} past a send slot that never fired, so the scanner is not running. ` +
+        'Redeploy on a build that arms the cron room, then reload this panel.',
+      scheduled,
+      overdue,
+    }
+  }
+  if (scheduled > 0) return { status: 'running', reason: '', scheduled, overdue: 0 }
   return {
     status: 'idle',
     reason: 'No beats are scheduled. Create or resume a newsletter to give the scheduler something to file.',
     scheduled: 0,
+    overdue: 0,
   }
 }
 
@@ -204,5 +245,32 @@ export function countScheduled(
 ): number {
   return rows.filter(
     (r) => r.data?.status === 'active' && typeof r.data?.nextSendAt === 'number' && r.data.nextSendAt > now,
+  ).length
+}
+
+/**
+ * How far past its slot an active beat has to be before we call the scanner
+ * stalled. A tick every SCAN_INTERVAL_MINUTES means a beat is legitimately in
+ * the past for up to one full interval before the next sweep picks it up; two
+ * intervals leaves room for one late or skipped tick without crying wolf.
+ */
+export const OVERDUE_GRACE_MS = 2 * SCAN_INTERVAL_MINUTES * 60_000
+
+/**
+ * Count active newsletters whose slot came and went without the scanner
+ * advancing them. Any row here is proof a tick did not run: scanDue advances
+ * nextSendAt for every beat it fires, so a healthy scanner cannot leave one
+ * sitting more than a grace window behind.
+ */
+export function countOverdue(
+  rows: { data?: { status?: unknown; nextSendAt?: unknown } }[],
+  now: number,
+  graceMs: number = OVERDUE_GRACE_MS,
+): number {
+  return rows.filter(
+    (r) =>
+      r.data?.status === 'active' &&
+      typeof r.data?.nextSendAt === 'number' &&
+      r.data.nextSendAt < now - graceMs,
   ).length
 }

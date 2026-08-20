@@ -17,9 +17,10 @@
 import type { CronTask } from 'deepspace/worker'
 import { buildCronContext, enqueueJob } from 'deepspace/worker'
 import type { Env } from '../worker'
-import { computeNextSendAt, type Schedule } from './lib/schedule'
+import { nextSlotAfterNow, type Schedule } from './lib/schedule'
+import { SCAN_INTERVAL_MINUTES } from './config'
 
-export const tasks: CronTask[] = [{ name: 'scan-due', intervalMinutes: 15 }]
+export const tasks: CronTask[] = [{ name: 'scan-due', intervalMinutes: SCAN_INTERVAL_MINUTES }]
 
 // An issue stuck in 'draft' past this is a crashed/aborted Job (a live Job
 // finishes well under 15 min); sweep it to a terminal 'failed' so the UI moves on.
@@ -42,8 +43,10 @@ function toSchedule(data: Record<string, unknown>): Schedule {
 /**
  * Scan active newsletters whose slot has arrived; for each, create a draft
  * issue, enqueue generate-issue, and advance nextSendAt so the same slot is not
- * re-scanned on the next tick, nextSendAt is advanced from the OLD slot (not from
- * `now`) so a late scan does not drift the cadence forward.
+ * re-scanned on the next tick. nextSendAt is advanced from the OLD slot (not
+ * from `now`) so a late scan does not drift the cadence forward, then skipped
+ * forward past any slots missed during an outage so a backlog fires once rather
+ * than replaying every missed slot as its own billed issue.
  */
 export async function scanDue(env: Env, now: number): Promise<void> {
   const ctx = buildCronContext(env, env.OWNER_USER_ID, `app:${env.APP_NAME}`)
@@ -56,8 +59,10 @@ export async function scanDue(env: Env, now: number): Promise<void> {
     if (due == null || due > now) continue
 
     // Advance from the slot we are firing, not from `now`, so the next slot is
-    // grounded in the cadence even if the scan ran late.
-    const next = computeNextSendAt(toSchedule(data), due)
+    // grounded in the cadence even if the scan ran late — and skip forward past
+    // any slots missed during an outage instead of replaying them one tick at a
+    // time as fresh owner-billed issues. See nextSlotAfterNow.
+    const next = nextSlotAfterNow(toSchedule(data), due, now)
 
     // A schedule that can never fire again (custom with no days picked) would
     // otherwise leave nextSendAt unchanged and re-fire every tick, billing the

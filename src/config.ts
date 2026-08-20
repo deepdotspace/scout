@@ -50,6 +50,14 @@ export const FUNNEL = {
   searchesPerTick: 8,
 } as const
 
+/**
+ * How often the scan-due cron task sweeps for newsletters whose slot has
+ * arrived. One source of truth: src/cron.ts registers the task at this
+ * interval, and config-health uses it to decide how far past its slot an
+ * active beat has to be before the scanner is provably not running.
+ */
+export const SCAN_INTERVAL_MINUTES = 15
+
 // Recency window option -> days back for the search startPublishedDate / after:.
 export const RECENCY_DAYS: Record<string, number> = {
   '24h': 1,

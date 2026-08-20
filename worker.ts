@@ -63,8 +63,10 @@ import {
   schedulerCheck,
   storageCheck,
   countScheduled,
+  countOverdue,
 } from './src/lib/config-health.js'
 import type { ConfigHealth } from './src/lib/config-health.js'
+import { cronRoomName, createCronArmer } from './src/lib/cron-arm.js'
 import { MODELS } from './src/config.js'
 import { buildCompanionPrompt, profileExtract } from './src/prompts/index.js'
 import {
@@ -119,6 +121,10 @@ export class AppPresenceRoom extends PresenceRoom<Env> {}
  * next interval / cron-expression match, calls `onTask(name)`, and
  * records the execution in its `cron_history` table. Admin clients can
  * watch via the `useCronMonitor('app:<APP_NAME>')` hook.
+ *
+ * Configuring tasks does NOT start them: the first alarm is only scheduled
+ * once something addresses this DO. The `/api/*` arming middleware below is
+ * what does that — without it every task here stays dormant forever.
  */
 export class AppCronRoom extends CronRoom<Env> {
   constructor(state: DurableObjectState, env: Env) {
@@ -231,6 +237,36 @@ export type AppContext = { Bindings: Env }
 
 const app = new Hono<AppContext>()
 app.use('/api/*', cors())
+
+// ---------------------------------------------------------------------------
+// Arm the cron room
+//
+// Without this the scan-due task in src/cron.ts never runs: CronRoom only
+// schedules its first alarm when the DO is first touched, and nothing else in
+// Scout ever touches it. See src/lib/cron-arm.ts for the full why.
+//
+// Mounted on /api/* rather than * on purpose. Arming is a one-shot event that
+// self-perpetuates once it lands, so it does not need the widest possible
+// request surface — it needs the requests that mean somebody is actually using
+// the app. Every real session hits /api/* within the first second (the SPA's
+// session check, config-health, generate). Meanwhile Scout now serves a public
+// /welcome landing, and an anonymous marketing pageview — or a crawler hitting
+// it — should not be what starts owner-billed generation. /api/* also keeps
+// the ping off the static-asset path, where it would otherwise fire on the
+// first stylesheet request of every new isolate.
+// ---------------------------------------------------------------------------
+
+const armCron = createCronArmer()
+
+app.use('/api/*', async (c, next) => {
+  const arming = armCron(() => {
+    const ns = c.env.CRON_ROOMS
+    return ns.get(ns.idFromName(cronRoomName(c.env.APP_NAME))).fetch('https://cron-arm/ping')
+  })
+  // waitUntil, never await: arming must not sit in front of the response.
+  if (arming) c.executionCtx.waitUntil(arming)
+  await next()
+})
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -1131,8 +1167,8 @@ app.post('/api/companion/regenerate', async (c) => {
 //
 // Every row has a REAL basis and none fakes a green: owner/email/storage from a
 // records read, model from the owner credential being wired (we do not bill a
-// live model ping on every open), scheduler from the cron binding + a count of
-// active beats queued for a future run. The integrations check is an owner-BILLED
+// live model ping on every open), scheduler from whether any active beat was
+// left behind by a slot that never fired. The integrations check is an owner-BILLED
 // Exa search, so it runs only with ?probe=1 (an explicit Settings open or
 // refresh). The rail dot polls without the flag, so it never spends a search; it
 // gets integrations: 'unknown' and the client caches a recent deep result.
@@ -1162,16 +1198,24 @@ app.get('/api/config-health', async (c) => {
   // We do not ping a model here (that would bill the owner on every open).
   const model = modelCheck(Boolean(c.env.APP_OWNER_JWT))
 
-  // scheduler: cron DO bound + count of active beats queued for a future run.
+  // scheduler: the binding alone proves nothing (an unarmed cron room looks
+  // identical to a live one), so the real signal is whether any active beat was
+  // left sitting past a slot the scanner should have fired. See schedulerCheck.
   let scheduled = 0
+  let overdue = 0
   try {
     const beats = await tools.query<{ status?: unknown; nextSendAt?: unknown }>('newsletters', {})
-    const rows = beats.success && Array.isArray(beats.data?.records) ? beats.data.records : []
-    scheduled = countScheduled(rows as { data?: { status?: unknown; nextSendAt?: unknown } }[], Date.now())
+    const rows = (beats.success && Array.isArray(beats.data?.records) ? beats.data.records : []) as {
+      data?: { status?: unknown; nextSendAt?: unknown }
+    }[]
+    const now = Date.now()
+    scheduled = countScheduled(rows, now)
+    overdue = countOverdue(rows, now)
   } catch {
     scheduled = 0
+    overdue = 0
   }
-  const scheduler = schedulerCheck(Boolean(c.env.CRON_ROOMS), scheduled)
+  const scheduler = schedulerCheck(Boolean(c.env.CRON_ROOMS), scheduled, overdue)
 
   const storage = storageCheck(recordsReachable)
 
