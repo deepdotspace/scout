@@ -138,7 +138,8 @@ const DEMO_HEALTH: HealthRowView[] = [
  *     would bill the owner on every open), so it reads "Configured", not a green
  *     "Healthy" we have not verified.
  *   - Web search: a live owner-billed Exa probe (only under ?probe=1).
- *   - Scheduler: the cron binding plus a count of beats queued for a future run.
+ *   - Scheduler: whether any active beat was left behind by a slot that never
+ *     fired (the one signal that catches a cron room nobody ever armed).
  *   - Storage: the records store answered this very request.
  */
 function liveHealthRows(data: ConfigHealth): HealthRowView[] {
@@ -165,7 +166,10 @@ function liveHealthRows(data: ConfigHealth): HealthRowView[] {
     data.scheduler.status === 'running'
       ? {
           label: 'Scheduler',
-          detail: `Cron is live. ${data.scheduler.scheduled} ${data.scheduler.scheduled === 1 ? 'beat is' : 'beats are'} queued for their next run.`,
+          // Says only what was actually checked: beats are queued and none has
+          // slipped past its slot. "Cron is live" was the old wording, and it
+          // was a claim this panel had no way to verify.
+          detail: `${data.scheduler.scheduled} ${data.scheduler.scheduled === 1 ? 'beat is' : 'beats are'} queued and none has missed its slot.`,
           status: 'Running',
           tone: 'ok',
         }

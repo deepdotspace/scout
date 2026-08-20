@@ -14,12 +14,17 @@
  * page and nothing private. "Open the studio" on the landing then triggers the SDK
  * sign-in flow (or goes straight to the desk if already signed in).
  *
+ * Entry rule: a signed-out visitor at the root is sent to the landing rather than
+ * being met by the sign-in overlay, because `/` is the URL people open first.
+ * Deep links keep the overlay so their destination survives sign-in. The whole
+ * rule lives in src/lib/routing.ts (`resolveRootBranch`) and is unit-tested there.
+ *
  * The data layer (AuthBoot -> RecordProvider allowAnonymous) wraps both branches so
  * the providers/context tree is stable across a sign-in transition.
  */
 
 import { Suspense, type ReactNode } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { DeepSpaceAuthProvider, useAuth, AuthGate } from 'deepspace'
 import { RecordProvider, RecordScope } from 'deepspace'
 import { ToastProvider } from '../components/ui'
@@ -28,9 +33,7 @@ import { ScoutMark, ScoutToastProvider } from '../components/scout'
 import { AccentModeProvider } from '../theme/accent'
 import { SCOPE_ID } from '../constants'
 import { schemas } from '../schemas'
-
-/** The one public, shell-less, ungated route. Everything else stays owner-gated. */
-const PUBLIC_PATH = '/welcome'
+import { PUBLIC_PATH, resolveRootBranch } from '../lib/routing'
 
 export default function App() {
   return (
@@ -57,16 +60,29 @@ export default function App() {
 }
 
 /**
- * Splits the public landing from the gated studio by path. The landing renders the
- * Outlet bare (its own sticky nav, no sidebar, no AuthGate). Every other route
- * mounts inside the AuthGate + AppShell, so a signed-out visitor there still sees
- * the sign-in overlay and the studio stays owner-gated.
+ * Splits the public landing from the gated studio by path + session, per
+ * `resolveRootBranch`. The landing renders the Outlet bare (its own sticky nav, no
+ * sidebar, no AuthGate). A signed-out visitor at the root is redirected to it.
+ * Every other route mounts inside the AuthGate + AppShell, so a signed-out visitor
+ * deep-linking there still gets the sign-in overlay at their own URL and the studio
+ * stays owner-gated.
+ *
+ * `replace` on the redirect keeps the root out of history, so Back from the landing
+ * goes wherever the visitor came from instead of bouncing off the root again.
  */
 function RootRoutes() {
   const { pathname } = useLocation()
-  const isPublic = pathname === PUBLIC_PATH
+  const { isLoaded, isSignedIn } = useAuth()
+  const branch = resolveRootBranch({ pathname, isLoaded, isSignedIn })
 
-  if (isPublic) {
+  // Belt and braces: AuthBoot already holds everything back until the session
+  // resolves, so this is unreachable today. It stays because the redirect below is
+  // only correct on a resolved session, and that must not depend on a parent.
+  if (branch === 'boot') return <BootScreen />
+
+  if (branch === 'redirect-public') return <Navigate to={PUBLIC_PATH} replace />
+
+  if (branch === 'public') {
     return (
       <div className="h-full overflow-y-auto">
         <Suspense fallback={<BootScreen />}>

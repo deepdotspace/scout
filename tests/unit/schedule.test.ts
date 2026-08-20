@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeNextSendAt, type Schedule } from '../../src/lib/schedule'
+import { computeNextSendAt, nextSlotAfterNow, type Schedule } from '../../src/lib/schedule'
 
 // The function returns an epoch ms; we assert by reading that instant back in the
 // schedule's OWN timezone (so the test is timezone-of-the-runner independent) and
@@ -130,5 +130,68 @@ describe('computeNextSendAt', () => {
     expect(wallClock(next, 'America/New_York').hm).toBe('08:00')
     // 2026-03-09 is after the spring-forward, so EDT (UTC-4): 08:00 -> 12:00 UTC.
     expect(new Date(next).toISOString()).toBe('2026-03-09T12:00:00.000Z')
+  })
+})
+
+// nextSlotAfterNow is what scanDue actually calls. It keeps computeNextSendAt's
+// "advance from the fired slot, not from now" behaviour for a normal tick, and
+// only diverges after an outage, where advancing one slot at a time would
+// replay every missed slot as its own owner-billed issue.
+describe('nextSlotAfterNow (catch up once, never replay a backlog)', () => {
+  it('is identical to a one-step advance when the scan is only minutes late', () => {
+    const due = Date.parse('2026-06-18T07:00:00Z')
+    const now = due + 4 * 60_000 // scanned 4 minutes after the slot
+    const s = sched({ frequency: 'daily', time: '07:00', timezone: 'UTC' })
+    expect(nextSlotAfterNow(s, due, now)).toBe(computeNextSendAt(s, due))
+  })
+
+  it('does not drift the cadence forward when a tick runs late', () => {
+    // The slot is 07:00. Scanning at 07:14 must still land tomorrow at 07:00,
+    // not 07:14 tomorrow — this is why we advance from `due`, not from `now`.
+    const due = Date.parse('2026-06-18T07:00:00Z')
+    const next = nextSlotAfterNow(
+      sched({ frequency: 'daily', time: '07:00', timezone: 'UTC' }),
+      due,
+      due + 14 * 60_000,
+    )!
+    expect(new Date(next).toISOString()).toBe('2026-06-19T07:00:00.000Z')
+  })
+
+  it('skips a two-month daily backlog to the next future slot in ONE step', () => {
+    // The production shape: a daily beat stuck at 2026-06-21 while now is
+    // 2026-08-20. A one-step advance would return 06-22 and re-fire ~60 times.
+    const due = Date.parse('2026-06-21T07:00:00Z')
+    const now = Date.parse('2026-08-20T03:10:00Z')
+    const next = nextSlotAfterNow(sched({ frequency: 'daily', time: '07:00', timezone: 'UTC' }), due, now)!
+    expect(next).toBeGreaterThan(now)
+    expect(new Date(next).toISOString()).toBe('2026-08-20T07:00:00.000Z')
+    expect(wallClock(next, 'UTC').hm).toBe('07:00')
+  })
+
+  it('skips a weekly backlog and still lands on the right weekday', () => {
+    const due = Date.parse('2026-06-22T08:00:00Z') // a Monday
+    const now = Date.parse('2026-08-20T03:10:00Z')
+    const next = nextSlotAfterNow(
+      sched({ frequency: 'weekly', days: ['mon'], time: '08:00', timezone: 'UTC' }),
+      due,
+      now,
+    )!
+    expect(next).toBeGreaterThan(now)
+    expect(wallClock(next, 'UTC').weekday).toBe('mon')
+    expect(wallClock(next, 'UTC').hm).toBe('08:00')
+  })
+
+  it('always returns an instant strictly in the future', () => {
+    const now = Date.parse('2026-08-20T03:10:00Z')
+    for (const daysBack of [0, 1, 7, 30, 200]) {
+      const due = now - daysBack * 86_400_000
+      const next = nextSlotAfterNow(sched({ frequency: 'weekdays', time: '09:00', timezone: 'UTC' }), due, now)!
+      expect(next).toBeGreaterThan(now)
+    }
+  })
+
+  it('preserves the never-fires signal so scanDue can pause the newsletter', () => {
+    const now = Date.parse('2026-08-20T03:10:00Z')
+    expect(nextSlotAfterNow(sched({ frequency: 'custom', days: [] }), now - 86_400_000, now)).toBeNull()
   })
 })

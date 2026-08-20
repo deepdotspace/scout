@@ -17,7 +17,32 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { verifyJwt, apiWorkerFetch, platformWorkerFetch, authWorkerFetch } from 'deepspace/worker'
+import { authenticatedRoomRequest, resolveAppRole as sdkResolveAppRole } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
+
+/**
+ * Resolve a user's role from the app's canonical `users` collection.
+ *
+ * The SDK's resolveAppRole() addresses the RecordRoom as `app:${DEEPSPACE_APP_ID}`.
+ * This app's room - the one that actually holds the `users` rows this reads - is
+ * keyed `app:${APP_NAME}` (SCOPE_ID in src/constants.ts, what the client mounts
+ * RecordScope on, and every server-side idFromName in this file). Re-keying the
+ * room would orphan live data, so hand the SDK helper the name the room is
+ * actually stored under. The role logic itself is the SDK's, unchanged.
+ *
+ * This deliberately shadows the import so no call site can reach the raw export:
+ * a bare call reads an empty room and returns 'viewer' for everyone but the owner.
+ */
+function resolveAppRole(env: Env, userId: string) {
+  return sdkResolveAppRole(
+    {
+      RECORD_ROOMS: env.RECORD_ROOMS,
+      DEEPSPACE_APP_ID: env.APP_NAME,
+      OWNER_USER_ID: env.OWNER_USER_ID,
+    },
+    userId,
+  )
+}
 import { RecordRoom, YjsRoom, CanvasRoom, PresenceRoom, CronRoom, JobRoom } from 'deepspace/worker'
 import { enqueueJob } from 'deepspace/worker'
 import type { Job, JobContext, ActionTools, ActionResult, DOManifest, DOBindings } from 'deepspace/worker'
@@ -38,8 +63,10 @@ import {
   schedulerCheck,
   storageCheck,
   countScheduled,
+  countOverdue,
 } from './src/lib/config-health.js'
 import type { ConfigHealth } from './src/lib/config-health.js'
+import { cronRoomName, createCronArmer } from './src/lib/cron-arm.js'
 import { MODELS } from './src/config.js'
 import { buildCompanionPrompt, profileExtract } from './src/prompts/index.js'
 import {
@@ -94,6 +121,10 @@ export class AppPresenceRoom extends PresenceRoom<Env> {}
  * next interval / cron-expression match, calls `onTask(name)`, and
  * records the execution in its `cron_history` table. Admin clients can
  * watch via the `useCronMonitor('app:<APP_NAME>')` hook.
+ *
+ * Configuring tasks does NOT start them: the first alarm is only scheduled
+ * once something addresses this DO. The `/api/*` arming middleware below is
+ * what does that — without it every task here stays dormant forever.
  */
 export class AppCronRoom extends CronRoom<Env> {
   constructor(state: DurableObjectState, env: Env) {
@@ -117,7 +148,13 @@ export class AppCronRoom extends CronRoom<Env> {
  */
 export class AppJobRoom extends JobRoom<Env> {
   constructor(state: DurableObjectState, env: Env) {
-    super(state, env)
+    super(state, env, {
+      authorizeWrite: async (user) => {
+        if (user.userId.startsWith('anon-')) return false
+        const role = await resolveAppRole(env, user.userId)
+        return role === 'member' || role === 'admin'
+      },
+    })
   }
 
   protected async onJob(job: Job, ctx: JobContext): Promise<unknown> {
@@ -200,6 +237,47 @@ export type AppContext = { Bindings: Env }
 
 const app = new Hono<AppContext>()
 app.use('/api/*', cors())
+
+// ---------------------------------------------------------------------------
+// Arm the cron room
+//
+// Without this the scan-due task in src/cron.ts never runs: CronRoom only
+// schedules its first alarm when the DO is first touched, and nothing else in
+// Scout ever touches it. See src/lib/cron-arm.ts for the full why.
+//
+// Mounted on /api/* rather than * on purpose. Arming is a one-shot event that
+// self-perpetuates once it lands, so it does not need the widest possible
+// request surface — it needs the requests that mean somebody is actually using
+// the app. Every real session hits /api/* within the first second (the SPA's
+// session check, config-health, generate). Meanwhile Scout now serves a public
+// /welcome landing, and an anonymous marketing pageview — or a crawler hitting
+// it — should not be what starts owner-billed generation. /api/* also keeps
+// the ping off the static-asset path, where it would otherwise fire on the
+// first stylesheet request of every new isolate.
+// ---------------------------------------------------------------------------
+
+const armCron = createCronArmer()
+
+app.use('/api/*', async (c, next) => {
+  const arming = armCron(() => {
+    const ns = c.env.CRON_ROOMS
+    return ns.get(ns.idFromName(cronRoomName(c.env.APP_NAME))).fetch('https://cron-arm/ping')
+  })
+  // waitUntil, never await: arming must not sit in front of the response.
+  // `c.executionCtx` is a throwing getter, not an optional property: it raises
+  // when the app is driven without one (a unit test calling app.fetch(req, env)
+  // with two arguments). The ping is already in flight by then, and a missing
+  // ExecutionContext must not turn a real route into a 500 just because arming
+  // rode along on it.
+  if (arming) {
+    try {
+      c.executionCtx.waitUntil(arming)
+    } catch {
+      /* no ExecutionContext to hand it to; the ping runs detached */
+    }
+  }
+  await next()
+})
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -416,18 +494,22 @@ app.all('/api/integrations/:name/:endpoint', async (c) => {
 // ---------------------------------------------------------------------------
 
 // The DO reads identity (userId, userName, userEmail, userImageUrl, role)
-// off the URL it receives and trusts it. Anything the client put on the URL
-// is stripped on every code path; identity is re-applied only from a
-// verified JWT. Three states: no token = anonymous (the SDK's
-// allowAnonymous flow), invalid token = 401, valid token = JWT identity.
+// off request headers and trusts them, so the worker is the only thing
+// allowed to set them. `authenticatedRoomRequest` deletes the token, the
+// five legacy identity query params AND the five identity headers off
+// whatever the client sent, then stamps only what the JWT proves — so
+// neither channel is spoofable. Three states: no token = anonymous (the
+// SDK's allowAnonymous flow), invalid token = 401, valid token = JWT
+// identity. `extraIdentity` may only add a role; everything else is
+// derived from the verified claims.
 function wsRoute(
   doNamespace: (env: Env) => DurableObjectNamespace,
-  extraParams?: (auth: VerifyResult, env: Env) => Record<string, string>,
+  extraIdentity?: (auth: VerifyResult, env: Env) => { role?: string } | Promise<{ role?: string }>,
 ) {
   return async (c: any) => {
     const id = c.req.param('roomId') ?? c.req.param('docId') ?? c.req.param('scopeId')
-    const url = new URL(c.req.url)
-    const token = url.searchParams.get('token')
+    if (!id) return new Response('Not found', { status: 404 })
+    const token = new URL(c.req.url).searchParams.get('token')
 
     let auth: VerifyResult | null = null
     if (token) {
@@ -435,27 +517,15 @@ function wsRoute(
       if (!auth) return new Response('Unauthorized', { status: 401 })
     }
 
-    const doUrl = new URL(c.req.url)
-    doUrl.searchParams.delete('token')
-    for (const k of ['userId', 'userName', 'userEmail', 'userImageUrl', 'role']) {
-      doUrl.searchParams.delete(k)
-    }
-
-    if (auth) {
-      doUrl.searchParams.set('userId', auth.userId)
-      if (auth.claims.name) doUrl.searchParams.set('userName', auth.claims.name)
-      if (auth.claims.email) doUrl.searchParams.set('userEmail', auth.claims.email)
-      if (auth.claims.image) doUrl.searchParams.set('userImageUrl', auth.claims.image)
-      if (extraParams) {
-        for (const [k, v] of Object.entries(extraParams(auth, c.env))) {
-          doUrl.searchParams.set(k, v)
-        }
-      }
-    }
+    const roomRequest = authenticatedRoomRequest(
+      c.req.raw,
+      auth,
+      auth ? await extraIdentity?.(auth, c.env) : undefined,
+    )
 
     const ns = doNamespace(c.env)
     const stub = ns.get(ns.idFromName(id))
-    return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+    return stub.fetch(roomRequest)
   }
 }
 
@@ -547,43 +617,41 @@ async function resolveDocsYjsRole(
   return null
 }
 
+// Not `wsRoute`: this room's role comes from the document's own ACL, and a
+// user with no entry on it is refused outright (403) rather than downgraded
+// to a viewer, which `extraIdentity` cannot express. Identity still travels
+// through `authenticatedRoomRequest` so the DO sees verified headers only.
 app.get('/ws/yjs/:docId', async (c) => {
   const docId = c.req.param('docId')
-  const url = new URL(c.req.url)
-  const token = url.searchParams.get('token')
+  const token = new URL(c.req.url).searchParams.get('token')
   const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
   if (!auth) return new Response('Unauthorized', { status: 401 })
 
   const role = await resolveDocsYjsRole(c.env, docId, auth.userId)
   if (!role) return new Response('Forbidden', { status: 403 })
 
-  const doUrl = new URL(c.req.url)
-  doUrl.searchParams.set('userId', auth.userId)
-  doUrl.searchParams.set('role', role)
-  doUrl.searchParams.delete('token')
+  const roomRequest = authenticatedRoomRequest(c.req.raw, auth, { role })
 
   const stub = c.env.YJS_ROOMS.get(c.env.YJS_ROOMS.idFromName(docId))
-  return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+  return stub.fetch(roomRequest)
 })
 
 app.get(
   '/ws/canvas/:docId',
   wsRoute(
     (env) => env.CANVAS_ROOMS,
-    () => ({ role: 'member' }),
+    // The user's real app role, not a constant 'member'. Hardcoding a role
+    // here would hand every signed-in user write access to every canvas.
+    async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
   ),
 )
 
+// No extra identity: name / email / avatar ride the verified headers that
+// `authenticatedRoomRequest` sets, and PresenceRoom no longer carries email
+// or avatar on a peer at all.
 app.get(
   '/ws/presence/:scopeId',
-  wsRoute(
-    (env) => env.PRESENCE_ROOMS,
-    (auth) => ({
-      ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-      ...(auth.claims.email ? { userEmail: auth.claims.email } : {}),
-      ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-    }),
-  ),
+  wsRoute((env) => env.PRESENCE_ROOMS),
 )
 
 app.get(
@@ -600,9 +668,10 @@ app.get(
   ),
 )
 
-// Jobs are owner-billed generation and JobRoom does not role-gate its messages,
-// so only the owner may connect (watch / enqueue / cancel / retry). Non-owners
-// are rejected outright rather than merely denied a role.
+// Jobs are owner-billed generation, so only the owner may connect (watch /
+// enqueue / cancel / retry). Non-owners are rejected outright rather than
+// merely denied a role. This route is what makes the room owner-only;
+// AppJobRoom's authorizeWrite is a second, independent check inside the DO.
 app.get('/ws/jobs/:roomId', async (c) => {
   const token = new URL(c.req.url).searchParams.get('token')
   const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
@@ -1109,8 +1178,8 @@ app.post('/api/companion/regenerate', async (c) => {
 //
 // Every row has a REAL basis and none fakes a green: owner/email/storage from a
 // records read, model from the owner credential being wired (we do not bill a
-// live model ping on every open), scheduler from the cron binding + a count of
-// active beats queued for a future run. The integrations check is an owner-BILLED
+// live model ping on every open), scheduler from whether any active beat was
+// left behind by a slot that never fired. The integrations check is an owner-BILLED
 // Exa search, so it runs only with ?probe=1 (an explicit Settings open or
 // refresh). The rail dot polls without the flag, so it never spends a search; it
 // gets integrations: 'unknown' and the client caches a recent deep result.
@@ -1140,16 +1209,24 @@ app.get('/api/config-health', async (c) => {
   // We do not ping a model here (that would bill the owner on every open).
   const model = modelCheck(Boolean(c.env.APP_OWNER_JWT))
 
-  // scheduler: cron DO bound + count of active beats queued for a future run.
+  // scheduler: the binding alone proves nothing (an unarmed cron room looks
+  // identical to a live one), so the real signal is whether any active beat was
+  // left sitting past a slot the scanner should have fired. See schedulerCheck.
   let scheduled = 0
+  let overdue = 0
   try {
     const beats = await tools.query<{ status?: unknown; nextSendAt?: unknown }>('newsletters', {})
-    const rows = beats.success && Array.isArray(beats.data?.records) ? beats.data.records : []
-    scheduled = countScheduled(rows as { data?: { status?: unknown; nextSendAt?: unknown } }[], Date.now())
+    const rows = (beats.success && Array.isArray(beats.data?.records) ? beats.data.records : []) as {
+      data?: { status?: unknown; nextSendAt?: unknown }
+    }[]
+    const now = Date.now()
+    scheduled = countScheduled(rows, now)
+    overdue = countOverdue(rows, now)
   } catch {
     scheduled = 0
+    overdue = 0
   }
-  const scheduler = schedulerCheck(Boolean(c.env.CRON_ROOMS), scheduled)
+  const scheduler = schedulerCheck(Boolean(c.env.CRON_ROOMS), scheduled, overdue)
 
   const storage = storageCheck(recordsReachable)
 
@@ -1306,7 +1383,12 @@ app.get('*', async (c) => {
   const response = await c.env.ASSETS.fetch(c.req.raw)
   if (response.status === 404) {
     const url = new URL(c.req.url)
-    url.pathname = '/index.html'
+    // A FILE, not a client route: a miss must 404. Returning the shell here
+    // is HTML parsed as JavaScript, which is a blank page.
+    if (url.pathname.slice(url.pathname.lastIndexOf('/') + 1).includes('.')) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+    url.pathname = '/'
     return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw))
   }
   return response

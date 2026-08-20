@@ -151,3 +151,35 @@ export function computeNextSendAt(schedule: Schedule, fromMs: number): number | 
   }
   return null
 }
+
+/**
+ * The next send instant that is still in the FUTURE, walking the cadence
+ * forward from the slot just fired.
+ *
+ * Why this exists: computeNextSendAt() advances exactly one slot from its
+ * reference. Advancing from the fired slot rather than from `now` is what keeps
+ * a scan that runs a few minutes late from dragging the cadence forward — for
+ * any normal tick the very next slot is already in the future and this returns
+ * it unchanged, one iteration, same answer as before.
+ *
+ * It only does more after an OUTAGE. If the scanner was down for weeks, one
+ * step lands on a slot that is also long past, so the next tick fires again,
+ * and again — replaying every missed slot as a fresh owner-billed issue, 15
+ * minutes apart, until it catches up. A daily beat two months behind would
+ * generate ~60 issues over ~15 hours. Missed sends are missed: the reader wants
+ * this slot's news once, not sixty re-runs of today's headlines. So we fire
+ * once and resync to the present by skipping the rest of the backlog.
+ *
+ * Returns null when the schedule can never fire again (custom with no days).
+ */
+export function nextSlotAfterNow(schedule: Schedule, firedSlotMs: number, nowMs: number): number | null {
+  let next = computeNextSendAt(schedule, firedSlotMs)
+  // Every pass advances at least a day (computeNextSendAt is strictly after its
+  // reference), so even a years-long backlog settles in a few hundred passes.
+  // The bound just keeps a pathological schedule from spinning. A null from any
+  // pass ends the loop on its own and is returned as the never-fires signal.
+  for (let guard = 0; next != null && next <= nowMs && guard < 4000; guard++) {
+    next = computeNextSendAt(schedule, next)
+  }
+  return next
+}
