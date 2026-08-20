@@ -35,9 +35,15 @@ export function cronRoomName(appName: string): string {
  *
  * Returns a function that runs `ping` the first time it is called and returns
  * the in-flight promise; every later call returns null (nothing to wait on).
- * If the ping rejects, the latch is released so a later request in the same
+ * If the ping fails, the latch is released so a later request in the same
  * isolate retries — a long-lived isolate must never be the reason the alarm
  * stays unarmed.
+ *
+ * "Fails" covers a rejected promise AND a synchronous throw while the ping is
+ * being built (a missing or renamed DO binding makes `env.CRON_ROOMS.get(...)`
+ * throw before any promise exists). Both mean the DO was never reached, so both
+ * un-latch, and neither is allowed to escape: arming rides along on somebody
+ * else's request and must never be the reason that request fails.
  *
  * A rejected ping means the DO was unreachable. A *404 response* is not a
  * failure: CronRoom.fetch() arms the room and then falls through to BaseRoom,
@@ -46,15 +52,20 @@ export function cronRoomName(appName: string): string {
  */
 export function createCronArmer(): (ping: () => Promise<unknown>) => Promise<void> | null {
   let armed = false
+  const failed = (err: unknown): void => {
+    armed = false
+    console.error('[cron-arm] could not arm the cron room; will retry:', err)
+  }
   return (ping) => {
     if (armed) return null
     armed = true
-    return ping().then(
-      () => undefined,
-      (err) => {
-        armed = false
-        console.error('[cron-arm] could not arm the cron room; will retry:', err)
-      },
-    )
+    let pending: Promise<unknown>
+    try {
+      pending = ping()
+    } catch (err) {
+      failed(err)
+      return null
+    }
+    return pending.then(() => undefined, failed)
   }
 }

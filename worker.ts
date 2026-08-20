@@ -264,7 +264,18 @@ app.use('/api/*', async (c, next) => {
     return ns.get(ns.idFromName(cronRoomName(c.env.APP_NAME))).fetch('https://cron-arm/ping')
   })
   // waitUntil, never await: arming must not sit in front of the response.
-  if (arming) c.executionCtx.waitUntil(arming)
+  // `c.executionCtx` is a throwing getter, not an optional property: it raises
+  // when the app is driven without one (a unit test calling app.fetch(req, env)
+  // with two arguments). The ping is already in flight by then, and a missing
+  // ExecutionContext must not turn a real route into a 500 just because arming
+  // rode along on it.
+  if (arming) {
+    try {
+      c.executionCtx.waitUntil(arming)
+    } catch {
+      /* no ExecutionContext to hand it to; the ping runs detached */
+    }
+  }
   await next()
 })
 

@@ -84,6 +84,37 @@ describe('createCronArmer (one ping per isolate, retried on failure)', () => {
     await expect(arm(() => Promise.reject(new Error('boom')))).resolves.toBeUndefined()
   })
 
+  // Building the ping can throw before any promise exists: a missing or renamed
+  // CRON_ROOMS makes `env.CRON_ROOMS.get(...)` a TypeError on the spot. That
+  // must not escape into the request the middleware is wrapping — a dead cron
+  // would become a 500 on the first request into every new isolate — and it
+  // must not leave the latch closed, or one bad request permanently disarms
+  // the isolate, which is the failure this whole file exists to prevent.
+  it('swallows a synchronous throw from building the ping', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const arm = createCronArmer()
+    expect(() =>
+      arm(() => {
+        throw new TypeError("Cannot read properties of undefined (reading 'get')")
+      }),
+    ).not.toThrow()
+  })
+
+  it('un-latches after a synchronous throw so a later request retries', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const ping = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new TypeError('no binding')
+      })
+      .mockReturnValue(Promise.resolve(undefined))
+    const arm = createCronArmer()
+
+    expect(arm(ping)).toBeNull() // nothing in flight to wait on
+    expect(arm(ping)).not.toBeNull()
+    expect(ping).toHaveBeenCalledTimes(2)
+  })
+
   it('gives each isolate its own latch', async () => {
     const ping = vi.fn().mockResolvedValue(undefined)
     await createCronArmer()(ping)
