@@ -17,6 +17,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { verifyJwt, apiWorkerFetch, platformWorkerFetch, authWorkerFetch } from 'deepspace/worker'
+import { authenticatedRoomRequest, resolveAppRole } from 'deepspace/worker'
 import type { JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import { RecordRoom, YjsRoom, CanvasRoom, PresenceRoom, CronRoom, JobRoom } from 'deepspace/worker'
 import { enqueueJob } from 'deepspace/worker'
@@ -416,18 +417,22 @@ app.all('/api/integrations/:name/:endpoint', async (c) => {
 // ---------------------------------------------------------------------------
 
 // The DO reads identity (userId, userName, userEmail, userImageUrl, role)
-// off the URL it receives and trusts it. Anything the client put on the URL
-// is stripped on every code path; identity is re-applied only from a
-// verified JWT. Three states: no token = anonymous (the SDK's
-// allowAnonymous flow), invalid token = 401, valid token = JWT identity.
+// off request headers and trusts them, so the worker is the only thing
+// allowed to set them. `authenticatedRoomRequest` deletes the token, the
+// five legacy identity query params AND the five identity headers off
+// whatever the client sent, then stamps only what the JWT proves — so
+// neither channel is spoofable. Three states: no token = anonymous (the
+// SDK's allowAnonymous flow), invalid token = 401, valid token = JWT
+// identity. `extraIdentity` may only add a role; everything else is
+// derived from the verified claims.
 function wsRoute(
   doNamespace: (env: Env) => DurableObjectNamespace,
-  extraParams?: (auth: VerifyResult, env: Env) => Record<string, string>,
+  extraIdentity?: (auth: VerifyResult, env: Env) => { role?: string } | Promise<{ role?: string }>,
 ) {
   return async (c: any) => {
     const id = c.req.param('roomId') ?? c.req.param('docId') ?? c.req.param('scopeId')
-    const url = new URL(c.req.url)
-    const token = url.searchParams.get('token')
+    if (!id) return new Response('Not found', { status: 404 })
+    const token = new URL(c.req.url).searchParams.get('token')
 
     let auth: VerifyResult | null = null
     if (token) {
@@ -435,27 +440,15 @@ function wsRoute(
       if (!auth) return new Response('Unauthorized', { status: 401 })
     }
 
-    const doUrl = new URL(c.req.url)
-    doUrl.searchParams.delete('token')
-    for (const k of ['userId', 'userName', 'userEmail', 'userImageUrl', 'role']) {
-      doUrl.searchParams.delete(k)
-    }
-
-    if (auth) {
-      doUrl.searchParams.set('userId', auth.userId)
-      if (auth.claims.name) doUrl.searchParams.set('userName', auth.claims.name)
-      if (auth.claims.email) doUrl.searchParams.set('userEmail', auth.claims.email)
-      if (auth.claims.image) doUrl.searchParams.set('userImageUrl', auth.claims.image)
-      if (extraParams) {
-        for (const [k, v] of Object.entries(extraParams(auth, c.env))) {
-          doUrl.searchParams.set(k, v)
-        }
-      }
-    }
+    const roomRequest = authenticatedRoomRequest(
+      c.req.raw,
+      auth,
+      auth ? await extraIdentity?.(auth, c.env) : undefined,
+    )
 
     const ns = doNamespace(c.env)
     const stub = ns.get(ns.idFromName(id))
-    return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+    return stub.fetch(roomRequest)
   }
 }
 
@@ -547,43 +540,41 @@ async function resolveDocsYjsRole(
   return null
 }
 
+// Not `wsRoute`: this room's role comes from the document's own ACL, and a
+// user with no entry on it is refused outright (403) rather than downgraded
+// to a viewer, which `extraIdentity` cannot express. Identity still travels
+// through `authenticatedRoomRequest` so the DO sees verified headers only.
 app.get('/ws/yjs/:docId', async (c) => {
   const docId = c.req.param('docId')
-  const url = new URL(c.req.url)
-  const token = url.searchParams.get('token')
+  const token = new URL(c.req.url).searchParams.get('token')
   const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
   if (!auth) return new Response('Unauthorized', { status: 401 })
 
   const role = await resolveDocsYjsRole(c.env, docId, auth.userId)
   if (!role) return new Response('Forbidden', { status: 403 })
 
-  const doUrl = new URL(c.req.url)
-  doUrl.searchParams.set('userId', auth.userId)
-  doUrl.searchParams.set('role', role)
-  doUrl.searchParams.delete('token')
+  const roomRequest = authenticatedRoomRequest(c.req.raw, auth, { role })
 
   const stub = c.env.YJS_ROOMS.get(c.env.YJS_ROOMS.idFromName(docId))
-  return stub.fetch(new Request(doUrl.toString(), c.req.raw))
+  return stub.fetch(roomRequest)
 })
 
 app.get(
   '/ws/canvas/:docId',
   wsRoute(
     (env) => env.CANVAS_ROOMS,
-    () => ({ role: 'member' }),
+    // The user's real app role, not a constant 'member'. Hardcoding a role
+    // here would hand every signed-in user write access to every canvas.
+    async (auth, env) => ({ role: await resolveAppRole(env, auth.userId) }),
   ),
 )
 
+// No extra identity: name / email / avatar ride the verified headers that
+// `authenticatedRoomRequest` sets, and PresenceRoom no longer carries email
+// or avatar on a peer at all.
 app.get(
   '/ws/presence/:scopeId',
-  wsRoute(
-    (env) => env.PRESENCE_ROOMS,
-    (auth) => ({
-      ...(auth.claims.name ? { userName: auth.claims.name } : {}),
-      ...(auth.claims.email ? { userEmail: auth.claims.email } : {}),
-      ...(auth.claims.image ? { userImageUrl: auth.claims.image } : {}),
-    }),
-  ),
+  wsRoute((env) => env.PRESENCE_ROOMS),
 )
 
 app.get(
@@ -1306,7 +1297,12 @@ app.get('*', async (c) => {
   const response = await c.env.ASSETS.fetch(c.req.raw)
   if (response.status === 404) {
     const url = new URL(c.req.url)
-    url.pathname = '/index.html'
+    // A FILE, not a client route: a miss must 404. Returning the shell here
+    // is HTML parsed as JavaScript, which is a blank page.
+    if (url.pathname.slice(url.pathname.lastIndexOf('/') + 1).includes('.')) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+    url.pathname = '/'
     return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw))
   }
   return response
