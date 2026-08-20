@@ -118,7 +118,13 @@ export class AppCronRoom extends CronRoom<Env> {
  */
 export class AppJobRoom extends JobRoom<Env> {
   constructor(state: DurableObjectState, env: Env) {
-    super(state, env)
+    super(state, env, {
+      authorizeWrite: async (user) => {
+        if (user.userId.startsWith('anon-')) return false
+        const role = await resolveAppRole(env, user.userId)
+        return role === 'member' || role === 'admin'
+      },
+    })
   }
 
   protected async onJob(job: Job, ctx: JobContext): Promise<unknown> {
@@ -591,9 +597,10 @@ app.get(
   ),
 )
 
-// Jobs are owner-billed generation and JobRoom does not role-gate its messages,
-// so only the owner may connect (watch / enqueue / cancel / retry). Non-owners
-// are rejected outright rather than merely denied a role.
+// Jobs are owner-billed generation, so only the owner may connect (watch /
+// enqueue / cancel / retry). Non-owners are rejected outright rather than
+// merely denied a role. This route is what makes the room owner-only;
+// AppJobRoom's authorizeWrite is a second, independent check inside the DO.
 app.get('/ws/jobs/:roomId', async (c) => {
   const token = new URL(c.req.url).searchParams.get('token')
   const auth = token ? (await verifyJwt(jwtConfig(c.env), token)).result : null
